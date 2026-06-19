@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -101,12 +102,9 @@ func Run(cfg Config) int {
 		return summary.MatchedFiles[i].Path < summary.MatchedFiles[j].Path
 	})
 
-	if len(summary.MatchedFiles) > 0 {
-		fmt.Println("Matched files:")
-		for i, f := range summary.MatchedFiles {
-			fmt.Printf("  %d. [%.2fs] %6s  %s\n", i+1, f.Duration, formatSize(f.Size), f.Path)
-		}
-		fmt.Println()
+	showTable := cfg.DryRun || !interactive || cfg.SelectExpr != "" || cfg.Yes
+	if len(summary.MatchedFiles) > 0 && showTable {
+		printMatchedFiles(cfg.Dir, summary.MatchedFiles)
 	}
 
 	if len(summary.MatchedFiles) == 0 {
@@ -132,7 +130,7 @@ func Run(cfg Config) int {
 	if interactive && cfg.SelectExpr == "" && !cfg.Yes {
 		lines := make([]string, len(summary.MatchedFiles))
 		for i, f := range summary.MatchedFiles {
-			lines[i] = fmt.Sprintf("[%.2fs] %6s  %s", f.Duration, formatSize(f.Size), f.Path)
+			lines[i] = fmt.Sprintf("[%.2fs] %6s  %s", f.Duration, formatSize(f.Size), displayPath(cfg.Dir, f.Path))
 		}
 		indices, ok, err := selecting.PromptInteractive(lines, os.Stdin, os.Stderr)
 		if err != nil {
@@ -238,6 +236,53 @@ func performSelectedDeletes(s *Summary, files []ProbeResult, onDelete func(int))
 			onDelete(processed)
 		}
 	}
+}
+
+func displayPath(baseDir, path string) string {
+	baseAbs, err1 := filepath.Abs(baseDir)
+	pathAbs, err2 := filepath.Abs(path)
+	if err1 != nil || err2 != nil {
+		return filepath.Clean(path)
+	}
+	rel, err := filepath.Rel(baseAbs, pathAbs)
+	if err != nil || rel == "" {
+		return filepath.Clean(path)
+	}
+	return rel
+}
+
+func printMatchedFiles(baseDir string, files []ProbeResult) {
+	if len(files) == 0 {
+		return
+	}
+	numW := len("#")
+	durW := len("Duration")
+	sizeW := len("Size")
+	for i, f := range files {
+		n := len(fmt.Sprintf("%d", i+1))
+		d := len(fmt.Sprintf("%.2fs", f.Duration))
+		s := len(formatSize(f.Size))
+		if n > numW {
+			numW = n
+		}
+		if d > durW {
+			durW = d
+		}
+		if s > sizeW {
+			sizeW = s
+		}
+	}
+	fmt.Println("Matched files:")
+	fmt.Printf("  %-*s  %-*s  %-*s  %s\n", numW, "#", durW, "Duration", sizeW, "Size", "Path")
+	for i, f := range files {
+		fmt.Printf("  %-*d  %-*.2fs  %-*s  %s\n",
+			numW, i+1,
+			durW, f.Duration,
+			sizeW, formatSize(f.Size),
+			displayPath(baseDir, f.Path),
+		)
+	}
+	fmt.Println()
 }
 
 func formatSize(size int64) string {

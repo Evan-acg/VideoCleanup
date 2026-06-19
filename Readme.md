@@ -28,7 +28,7 @@ vidc -d <directory> -m <seconds> [flags]
 | `--dir` | `-d` | string | *(required)* | Directory to scan |
 | `--max-duration` | `-m` | float | *(required)* | Delete threshold in seconds |
 | `--recursive` | `-r` | bool | `false` | Scan subdirectories recursively |
-| `--dry-run` | | bool | `true` | Preview only, no files are deleted |
+| `--dry-run` | | bool | `false` | Preview only, no files are deleted |
 | `--yes` | `-y` | bool | `false` | Confirm deletion in non-interactive mode |
 | `--workers` | `-w` | int | CPU count | Number of concurrent ffprobe workers |
 | `--extensions` | `-e` | string | `.mp4,.mov,.mkv,...` | Comma-separated video extensions |
@@ -41,26 +41,26 @@ vidc -d <directory> -m <seconds> [flags]
 ### Examples
 
 ```bash
-# Dry-run: preview short videos in a directory
-vidc -d "D:\videos" -m 10
-
-# Recursive dry-run
+# Interactive delete with selection prompt and confirmation (default behavior)
 vidc -d "D:\videos" -m 10 -r
 
-# Interactive delete with selection prompt and confirmation
-vidc -d "D:\videos" -m 10 -r --dry-run=false
+# Dry-run: preview short videos without deleting
+vidc -d "D:\videos" -m 10 --dry-run
+
+# Recursive dry-run
+vidc -d "D:\videos" -m 10 -r --dry-run
 
 # Scripted delete all matching files (non-interactive)
-vidc -d "D:\videos" -m 10 -r --dry-run=false --select all --confirm-delete
+vidc -d "D:\videos" -m 10 -r --select all --confirm-delete
 
 # Scripted delete by range (files 1 to 5)
-vidc -d "D:\videos" -m 10 -r --dry-run=false --select 1-5 --confirm-delete
+vidc -d "D:\videos" -m 10 -r --select 1-5 --confirm-delete
 
 # Scripted delete all except file 3
-vidc -d "D:\videos" -m 10 -r --dry-run=false --select all,-3 --confirm-delete
+vidc -d "D:\videos" -m 10 -r --select all,-3 --confirm-delete
 
 # Backward-compatible scripted delete (--yes implies confirm and defaults to all)
-vidc -d "D:\videos" -m 10 -r -y --dry-run=false
+vidc -d "D:\videos" -m 10 -r -y
 
 # Only .mp4 and .mov files, with 8 workers
 vidc -d "D:\videos" -m 5 -e "mp4,mov" -w 8
@@ -79,7 +79,7 @@ vidc -d "D:\videos" -m 10 --ffprobe "C:\tools\ffprobe.exe"
 6. **Delete** - Selected files are permanently removed with `os.Remove`. Progress is shown during deletion.
 7. **Report** - Prints a summary of scanned, matched, deleted, and failed counts.
 
-By default (`--dry-run=true`), the tool previews only and never deletes files.
+By default, the tool enters delete mode but requires interactive selection and confirmation before permanently removing any files. Use `--dry-run` to preview without deleting.
 
 ### Selection Expressions
 

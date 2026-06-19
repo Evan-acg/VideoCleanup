@@ -37,7 +37,7 @@ func parseFlags() app.Config {
 	flag.Float64Var(&maxDuration, "m", 0, "Delete threshold in seconds (short)")
 	flag.BoolVar(&recursive, "recursive", false, "Scan subdirectories recursively")
 	flag.BoolVar(&recursive, "r", false, "Scan subdirectories recursively (short)")
-	flag.BoolVar(&dryRun, "dry-run", true, "Preview mode, no files are deleted (default true)")
+	flag.BoolVar(&dryRun, "dry-run", false, "Preview mode, no files are deleted")
 	flag.BoolVar(&yes, "yes", false, "Confirm deletion (non-interactive)")
 	flag.BoolVar(&yes, "y", false, "Confirm deletion non-interactive (short)")
 	flag.IntVar(&workers, "workers", runtime.NumCPU(), "Number of concurrent ffprobe workers")
@@ -57,9 +57,9 @@ func parseFlags() app.Config {
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  vidc -d \"D:\\videos\" -m 10                          Dry-run, preview short videos\n")
-		fmt.Fprintf(os.Stderr, "  vidc -d \"D:\\videos\" -m 10 -r --dry-run=false       Interactive delete with selection\n")
-		fmt.Fprintf(os.Stderr, "  vidc -d \"D:\\videos\" -m 10 -r --dry-run=false --select all --confirm-delete  Scripted delete all\n")
+		fmt.Fprintf(os.Stderr, "  vidc -d \"D:\\videos\" -m 10 -r                          Interactive delete with selection\n")
+		fmt.Fprintf(os.Stderr, "  vidc -d \"D:\\videos\" -m 10 --dry-run                   Preview short videos\n")
+		fmt.Fprintf(os.Stderr, "  vidc -d \"D:\\videos\" -m 10 -r --select all --confirm-delete  Scripted delete all\n")
 	}
 
 	flag.Parse()

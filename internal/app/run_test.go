@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -884,5 +885,111 @@ func TestRun_SelectExprOverridesTTY(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(tmp, "videos", "short.mp4")); !os.IsNotExist(err) {
 		t.Error("file #2 should have been deleted (--select took non-interactive path)")
+	}
+}
+
+func TestDisplayPath_RelativeToScanDir(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	os.MkdirAll(sub, 0755)
+	os.WriteFile(filepath.Join(sub, "short.mp4"), []byte("x"), 0644)
+
+	filePath := filepath.Join(sub, "short.mp4")
+	got := displayPath(dir, filePath)
+
+	expected := filepath.Join("sub", "short.mp4")
+	if got != expected {
+		t.Errorf("expected %q, got %q", expected, got)
+	}
+}
+
+func TestDisplayPath_RootDir(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.mp4"), []byte("x"), 0644)
+
+	filePath := filepath.Join(dir, "a.mp4")
+	got := displayPath(dir, filePath)
+
+	if got != "a.mp4" {
+		t.Errorf("expected a.mp4, got %q", got)
+	}
+}
+
+func TestDisplayPath_OutsideBaseDir(t *testing.T) {
+	baseDir := t.TempDir()
+	otherDir := t.TempDir()
+	os.WriteFile(filepath.Join(otherDir, "b.mp4"), []byte("x"), 0644)
+
+	filePath := filepath.Join(otherDir, "b.mp4")
+	got := displayPath(baseDir, filePath)
+
+	// Should return a path containing .. or the clean absolute path
+	if !strings.Contains(got, "..") && got != filepath.Clean(filePath) {
+		t.Errorf("unexpected result for path outside base: %q", got)
+	}
+}
+
+func TestDisplayPath_NonExistentDir(t *testing.T) {
+	got := displayPath("/nonexistent/base", "/nonexistent/base/sub/a.mp4")
+	if got == "" {
+		t.Error("expected non-empty result for non-existent directory")
+	}
+}
+
+func TestPrintMatchedFiles_UsesTableAndRelativePaths(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "clips")
+	os.MkdirAll(sub, 0755)
+	os.WriteFile(filepath.Join(sub, "a.mp4"), []byte("d"), 0644)
+
+	files := []ProbeResult{
+		{Path: filepath.Join(sub, "a.mp4"), Duration: 3.2, Size: 1572864},
+	}
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	printMatchedFiles(dir, files)
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	out := buf.String()
+
+	if !strings.Contains(out, "Matched files:") {
+		t.Error("expected 'Matched files:' header")
+	}
+	if !strings.Contains(out, "Duration") || !strings.Contains(out, "Size") || !strings.Contains(out, "Path") {
+		t.Errorf("expected table headers Duration, Size, Path in output: %s", out)
+	}
+	if !strings.Contains(out, "1.5 MB") {
+		t.Errorf("expected formatted size 1.5 MB in output: %s", out)
+	}
+	if strings.Contains(out, dir) {
+		t.Errorf("output should not contain full base directory path: %s", out)
+	}
+}
+
+func TestPrintMatchedFiles_EmptyList(t *testing.T) {
+	dir := t.TempDir()
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	printMatchedFiles(dir, nil)
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	out := buf.String()
+
+	if out != "" {
+		t.Errorf("expected empty output, got: %s", out)
 	}
 }
