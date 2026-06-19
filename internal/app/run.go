@@ -63,9 +63,9 @@ func Run(cfg Config) int {
 		return exitCode
 	}
 
-	tty := progress.IsTerminal(os.Stderr)
+	interactive := isTerminal(os.Stdin) && isTerminal(os.Stderr)
 
-	scanSpinner := progress.NewSpinner(os.Stderr, tty && !cfg.NoProgress)
+	scanSpinner := progress.NewSpinner(os.Stderr, interactive && !cfg.NoProgress)
 	scanSpinner.Update(0, 0)
 
 	s := scan.New(cfg.Extensions)
@@ -86,7 +86,7 @@ func Run(cfg Config) int {
 		return 0
 	}
 
-	probeBar := progress.NewBar(os.Stderr, tty && !cfg.NoProgress)
+	probeBar := progress.NewBar(os.Stderr, interactive && !cfg.NoProgress)
 	probeBar.Start("Probing", len(files))
 	var probed atomic.Int64
 	results := probeAll(files, cfg.FFprobePath, cfg.Workers, func() {
@@ -109,6 +109,15 @@ func Run(cfg Config) int {
 		fmt.Println()
 	}
 
+	if len(summary.MatchedFiles) == 0 {
+		fmt.Println("No files matched the duration threshold.")
+		printReport(cfg, summary)
+		if summary.ScanErrors > 0 || summary.FailedProbes > 0 {
+			return 2
+		}
+		return 0
+	}
+
 	if cfg.DryRun {
 		printReport(cfg, summary)
 		if summary.ScanErrors > 0 || summary.FailedProbes > 0 || summary.FailedDeletes > 0 {
@@ -120,7 +129,7 @@ func Run(cfg Config) int {
 	selectedFiles := summary.MatchedFiles
 	userCancelled := false
 
-	if tty {
+	if interactive && cfg.SelectExpr == "" && !cfg.Yes {
 		lines := make([]string, len(summary.MatchedFiles))
 		for i, f := range summary.MatchedFiles {
 			lines[i] = fmt.Sprintf("[%.2fs] %6s  %s", f.Duration, formatSize(f.Size), f.Path)
@@ -183,7 +192,7 @@ func Run(cfg Config) int {
 	}
 
 	if len(selectedFiles) > 0 {
-		delBar := progress.NewBar(os.Stderr, tty && !cfg.NoProgress)
+		delBar := progress.NewBar(os.Stderr, interactive && !cfg.NoProgress)
 		delBar.Start("Deleting", len(selectedFiles))
 		performSelectedDeletes(&summary, selectedFiles, func(deleted int) {
 			delBar.Advance(deleted)
@@ -208,7 +217,9 @@ func confirmInteractive(stdin *os.File, stderr *os.File) bool {
 }
 
 func performSelectedDeletes(s *Summary, files []ProbeResult, onDelete func(int)) {
+	processed := 0
 	for _, r := range files {
+		processed++
 		if r.Error != nil {
 			continue
 		}
@@ -224,7 +235,7 @@ func performSelectedDeletes(s *Summary, files []ProbeResult, onDelete func(int))
 			s.Deleted++
 		}
 		if onDelete != nil {
-			onDelete(s.Deleted)
+			onDelete(processed)
 		}
 	}
 }
@@ -266,6 +277,9 @@ func ValidateConfig(cfg Config) (int, error) {
 
 // lookPath is a variable so tests can replace it with a mock.
 var lookPath = exec.LookPath
+
+// isTerminal is a variable so tests can replace it with a mock.
+var isTerminal = progress.IsTerminal
 
 // probeFile is a variable so tests can replace it with a mock.
 var probeFile = probe.Probe

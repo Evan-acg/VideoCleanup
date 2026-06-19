@@ -119,6 +119,9 @@ func (s *Scanner) ScanWithProgress(dir string, recursive bool, progress ScanProg
 			report()
 		}
 	}
+	if progress != nil {
+		progress(totalFiles, len(files))
+	}
 	return
 }
 

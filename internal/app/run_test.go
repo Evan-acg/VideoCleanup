@@ -751,3 +751,138 @@ func TestFormatSize(t *testing.T) {
 		}
 	}
 }
+
+func TestRun_NoMatch_DeleteMode(t *testing.T) {
+	tmp := setupFakeEnv(t)
+	defer os.RemoveAll(tmp)
+
+	oldLook := lookPath
+	lookPath = func(path string) (string, error) { return path, nil }
+	defer func() { lookPath = oldLook }()
+
+	oldProbe := probeFile
+	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+		return 12.0, nil
+	}
+	defer func() { probeFile = oldProbe }()
+
+	cfg := Config{
+		Dir:         filepath.Join(tmp, "videos"),
+		MaxDuration: 5,
+		Recursive:   false,
+		DryRun:      false,
+		Yes:         false,
+		Workers:     1,
+		Extensions:  scan.DefaultExtensions(),
+		FFprobePath: "ffprobe",
+	}
+
+	code := Run(cfg)
+	if code != 0 {
+		t.Errorf("expected exit code 0 when no files match, got %d", code)
+	}
+}
+
+func TestRun_SelectExprTakesPriority(t *testing.T) {
+	tmp := setupFakeEnv(t)
+	defer os.RemoveAll(tmp)
+
+	oldLook := lookPath
+	lookPath = func(path string) (string, error) { return path, nil }
+	defer func() { lookPath = oldLook }()
+
+	oldProbe := probeFile
+	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+		if strings.Contains(filepath.Base(videoPath), "short") {
+			return 3.2, nil
+		}
+		return 12.345, nil
+	}
+	defer func() { probeFile = oldProbe }()
+
+	cfg := Config{
+		Dir:           filepath.Join(tmp, "videos"),
+		MaxDuration:   10,
+		Recursive:     false,
+		DryRun:        false,
+		Yes:           false,
+		Workers:       2,
+		Extensions:    scan.DefaultExtensions(),
+		FFprobePath:   "ffprobe",
+		SelectExpr:    "1",
+		ConfirmDelete: true,
+	}
+
+	code := Run(cfg)
+	if code != 0 {
+		t.Errorf("expected exit code 0 when --select is provided in non-interactive mode, got %d", code)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, "videos", "short.mp4")); !os.IsNotExist(err) {
+		t.Error("selected file should have been deleted")
+	}
+}
+
+func TestPerformSelectedDeletes_ProgressOnFailure(t *testing.T) {
+	s := &Summary{}
+
+	progressCalls := 0
+	files := []ProbeResult{
+		{Path: "/nonexistent/a.mp4", Size: 4, Duration: 1.0},
+		{Path: "/nonexistent/b.mp4", Size: 4, Duration: 2.0},
+	}
+	performSelectedDeletes(s, files, func(processed int) {
+		progressCalls++
+	})
+
+	if progressCalls != 2 {
+		t.Errorf("expected 2 progress calls (one per file), got %d", progressCalls)
+	}
+	if s.FailedDeletes != 2 {
+		t.Errorf("expected 2 failed deletes, got %d", s.FailedDeletes)
+	}
+	if s.Deleted != 0 {
+		t.Errorf("expected 0 deleted, got %d", s.Deleted)
+	}
+}
+
+func TestRun_SelectExprOverridesTTY(t *testing.T) {
+	tmp := setupFakeEnv(t)
+	defer os.RemoveAll(tmp)
+
+	oldLook := lookPath
+	lookPath = func(path string) (string, error) { return path, nil }
+	defer func() { lookPath = oldLook }()
+
+	oldProbe := probeFile
+	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+		return 3.2, nil
+	}
+	defer func() { probeFile = oldProbe }()
+
+	oldTerm := isTerminal
+	isTerminal = func(f *os.File) bool { return true }
+	defer func() { isTerminal = oldTerm }()
+
+	cfg := Config{
+		Dir:           filepath.Join(tmp, "videos"),
+		MaxDuration:   10,
+		Recursive:     false,
+		DryRun:        false,
+		Yes:           false,
+		Workers:       2,
+		Extensions:    scan.DefaultExtensions(),
+		FFprobePath:   "ffprobe",
+		SelectExpr:    "2",
+		ConfirmDelete: true,
+	}
+
+	code := Run(cfg)
+	if code != 0 {
+		t.Errorf("expected exit code 0 when --select overrides simulated TTY, got %d", code)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, "videos", "short.mp4")); !os.IsNotExist(err) {
+		t.Error("file #2 should have been deleted (--select took non-interactive path)")
+	}
+}

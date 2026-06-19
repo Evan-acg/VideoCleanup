@@ -213,3 +213,17 @@ func TestParse_AllWithNoItems(t *testing.T) {
 		t.Errorf("expected empty, got %v", idx)
 	}
 }
+
+func TestParse_AllxNotAll(t *testing.T) {
+	_, err := Parse("allx", 5)
+	if err == nil {
+		t.Error("expected error for 'allx' (not a valid expression)")
+	}
+}
+
+func TestParse_AlligatorNotAll(t *testing.T) {
+	_, err := Parse("alligator,-2", 5)
+	if err == nil {
+		t.Error("expected error for 'alligator' (should not match as 'all')")
+	}
+}

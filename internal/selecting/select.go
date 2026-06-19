@@ -23,7 +23,7 @@ func Parse(expr string, n int) ([]int, error) {
 
 	tokens := strings.Split(expr, ",")
 	exclude := false
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(tokens[0])), "all") {
+	if strings.ToLower(strings.TrimSpace(tokens[0])) == "all" {
 		exclude = true
 		tokens = tokens[1:]
 	}
