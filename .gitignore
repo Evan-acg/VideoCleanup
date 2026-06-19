@@ -1,0 +1,47 @@
+# Binaries and build output
+bin/
+dist/
+build/
+out/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go test and coverage artifacts
+*.test
+*.prof
+*.cover
+coverage.out
+coverage.html
+
+# Go workspace file, usually machine-specific for this kind of single-module tool
+go.work
+go.work.sum
+
+# Dependency/vendor cache
+vendor/
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Customize
+
+dispatch/
+.agents/
