@@ -41,6 +41,7 @@ type Summary struct {
 	Deleted         int
 	FailedProbes    int
 	FailedDeletes   int
+	ScanErrors      int
 	MatchedFiles    []ProbeResult
 	ProbeErrors     []ProbeResult
 	DeleteErrors    []ProbeResult
@@ -58,12 +59,13 @@ func Run(cfg Config) int {
 	s := scan.New(cfg.Extensions)
 	files, totalFiles, scanErrs := s.Scan(cfg.Dir, cfg.Recursive)
 	for _, e := range scanErrs {
-		if cfg.Verbose {
-			fmt.Fprintf(os.Stderr, "scan warning: %v\n", e)
-		}
+		fmt.Fprintf(os.Stderr, "Error: scan: %v\n", e)
 	}
 
 	if len(files) == 0 {
+		if len(scanErrs) > 0 {
+			return 2
+		}
 		fmt.Println("No video files found.")
 		return 0
 	}
@@ -71,6 +73,7 @@ func Run(cfg Config) int {
 	results := probeAll(files, cfg.FFprobePath, cfg.Workers)
 
 	summary := buildSummary(results, totalFiles, cfg)
+	summary.ScanErrors = len(scanErrs)
 
 	if !cfg.DryRun && cfg.Yes {
 		performDeletes(&summary)
@@ -78,7 +81,7 @@ func Run(cfg Config) int {
 
 	printReport(cfg, summary)
 
-	if summary.FailedProbes > 0 || summary.FailedDeletes > 0 {
+	if summary.ScanErrors > 0 || summary.FailedProbes > 0 || summary.FailedDeletes > 0 {
 		return 2
 	}
 
@@ -113,6 +116,9 @@ func ValidateConfig(cfg Config) (int, error) {
 // lookPath is a variable so tests can replace it with a mock.
 var lookPath = exec.LookPath
 
+// probeFile is a variable so tests can replace it with a mock.
+var probeFile = probe.Probe
+
 func checkFFprobe(path string) error {
 	_, err := lookPath(path)
 	if err != nil {
@@ -131,7 +137,7 @@ func probeAll(files []scan.VideoFile, ffprobePath string, workers int) []ProbeRe
 		go func() {
 			defer wg.Done()
 			for f := range jobs {
-				dur, err := probe.Probe(ffprobePath, f.Path, probe.DefaultTimeout)
+				dur, err := probeFile(ffprobePath, f.Path, probe.DefaultTimeout)
 				results <- ProbeResult{
 					Path:     f.Path,
 					Size:     f.Size,
@@ -209,6 +215,7 @@ func printReport(cfg Config, s Summary) {
 	fmt.Printf("  deleted: %d\n", s.Deleted)
 	fmt.Printf("  failed probes: %d\n", s.FailedProbes)
 	fmt.Printf("  failed deletes: %d\n", s.FailedDeletes)
+	fmt.Printf("  scan errors: %d\n", s.ScanErrors)
 }
 
 func performDeletes(s *Summary) {
