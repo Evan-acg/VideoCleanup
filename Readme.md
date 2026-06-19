@@ -73,14 +73,14 @@ vidc -d "D:\videos" -m 10 --ffprobe "C:\tools\ffprobe.exe"
 
 ```
 .
-├── cmd/vidc/main.go        # Entry point and flag parsing
-├── internal/
-│   ├── app/run.go          # Orchestration, worker pool, reporting
-│   ├── probe/ffprobe.go    # ffprobe invocation and duration parsing
-│   ├── scan/scanner.go     # Directory walk and extension filtering
-│   └── cleanup/remover.go  # File deletion
-├── go.mod
-└── Readme.md
+|-- cmd/vidc/main.go        # Entry point and flag parsing
+|-- internal/
+|   |-- app/run.go          # Orchestration, worker pool, reporting
+|   |-- probe/ffprobe.go    # ffprobe invocation and duration parsing
+|   |-- scan/scanner.go     # Directory walk and extension filtering
+|   |-- cleanup/remover.go  # File deletion
+|-- go.mod
+|-- Readme.md
 ```
 
 ## Testing
