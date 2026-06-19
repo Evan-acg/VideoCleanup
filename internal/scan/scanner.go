@@ -42,10 +42,30 @@ func New(extensions []string) *Scanner {
 	return &Scanner{extensions: extMap}
 }
 
+// ScanProgressFn is called periodically during scanning with cumulative counts.
+type ScanProgressFn func(totalFiles int, videoCount int)
+
 // Scan walks the given directory and returns video files found.
 // It returns the list of video files, the total count of regular files scanned,
 // and any non-fatal errors encountered during traversal.
 func (s *Scanner) Scan(dir string, recursive bool) (files []VideoFile, totalFiles int, errs []error) {
+	return s.ScanWithProgress(dir, recursive, nil)
+}
+
+// ScanWithProgress walks the given directory and returns video files found.
+// It optionally calls progress after each file visit.
+func (s *Scanner) ScanWithProgress(dir string, recursive bool, progress ScanProgressFn) (files []VideoFile, totalFiles int, errs []error) {
+	tick := 0
+	report := func() {
+		if progress == nil {
+			return
+		}
+		tick++
+		if tick%16 == 0 {
+			progress(totalFiles, len(files))
+		}
+	}
+
 	if recursive {
 		filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -60,6 +80,7 @@ func (s *Scanner) Scan(dir string, recursive bool) (files []VideoFile, totalFile
 			}
 			totalFiles++
 			if !s.matchExt(path) {
+				report()
 				return nil
 			}
 			info, infoErr := d.Info()
@@ -68,6 +89,7 @@ func (s *Scanner) Scan(dir string, recursive bool) (files []VideoFile, totalFile
 				return nil
 			}
 			files = append(files, VideoFile{Path: path, Size: info.Size()})
+			report()
 			return nil
 		})
 	} else {
@@ -85,6 +107,7 @@ func (s *Scanner) Scan(dir string, recursive bool) (files []VideoFile, totalFile
 			totalFiles++
 			fullPath := filepath.Join(dir, entry.Name())
 			if !s.matchExt(fullPath) {
+				report()
 				continue
 			}
 			info, infoErr := entry.Info()
@@ -93,6 +116,7 @@ func (s *Scanner) Scan(dir string, recursive bool) (files []VideoFile, totalFile
 				continue
 			}
 			files = append(files, VideoFile{Path: fullPath, Size: info.Size()})
+			report()
 		}
 	}
 	return

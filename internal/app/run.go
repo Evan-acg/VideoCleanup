@@ -5,24 +5,31 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 
 	"vidc/internal/cleanup"
 	"vidc/internal/probe"
+	"vidc/internal/progress"
 	"vidc/internal/scan"
+	"vidc/internal/selecting"
 )
 
 // Config holds all configuration for a cleanup run.
 type Config struct {
-	Dir         string
-	MaxDuration float64
-	Recursive   bool
-	DryRun      bool
-	Yes         bool
-	Workers     int
-	Verbose     bool
-	FFprobePath string
-	Extensions  []string
+	Dir           string
+	MaxDuration   float64
+	Recursive     bool
+	DryRun        bool
+	Yes           bool
+	Workers       int
+	Verbose       bool
+	FFprobePath   string
+	Extensions    []string
+	SelectExpr    string
+	ConfirmDelete bool
+	NoProgress    bool
 }
 
 // ProbeResult holds the result of probing a single video file.
@@ -56,8 +63,17 @@ func Run(cfg Config) int {
 		return exitCode
 	}
 
+	tty := progress.IsTerminal(os.Stderr)
+
+	scanSpinner := progress.NewSpinner(os.Stderr, tty && !cfg.NoProgress)
+	scanSpinner.Update(0, 0)
+
 	s := scan.New(cfg.Extensions)
-	files, totalFiles, scanErrs := s.Scan(cfg.Dir, cfg.Recursive)
+	files, totalFiles, scanErrs := s.ScanWithProgress(cfg.Dir, cfg.Recursive, func(tf, vc int) {
+		scanSpinner.Update(tf, vc)
+	})
+	scanSpinner.Stop()
+
 	for _, e := range scanErrs {
 		fmt.Fprintf(os.Stderr, "Error: scan: %v\n", e)
 	}
@@ -70,13 +86,109 @@ func Run(cfg Config) int {
 		return 0
 	}
 
-	results := probeAll(files, cfg.FFprobePath, cfg.Workers)
+	probeBar := progress.NewBar(os.Stderr, tty && !cfg.NoProgress)
+	probeBar.Start("Probing", len(files))
+	var probed atomic.Int64
+	results := probeAll(files, cfg.FFprobePath, cfg.Workers, func() {
+		probeBar.Advance(int(probed.Add(1)))
+	})
+	probeBar.Finish()
 
 	summary := buildSummary(results, totalFiles, cfg)
 	summary.ScanErrors = len(scanErrs)
 
-	if !cfg.DryRun && cfg.Yes {
-		performDeletes(&summary)
+	sort.Slice(summary.MatchedFiles, func(i, j int) bool {
+		return summary.MatchedFiles[i].Path < summary.MatchedFiles[j].Path
+	})
+
+	if len(summary.MatchedFiles) > 0 {
+		fmt.Println("Matched files:")
+		for i, f := range summary.MatchedFiles {
+			fmt.Printf("  %d. [%.2fs] %6s  %s\n", i+1, f.Duration, formatSize(f.Size), f.Path)
+		}
+		fmt.Println()
+	}
+
+	if cfg.DryRun {
+		printReport(cfg, summary)
+		if summary.ScanErrors > 0 || summary.FailedProbes > 0 || summary.FailedDeletes > 0 {
+			return 2
+		}
+		return 0
+	}
+
+	selectedFiles := summary.MatchedFiles
+	userCancelled := false
+
+	if tty {
+		lines := make([]string, len(summary.MatchedFiles))
+		for i, f := range summary.MatchedFiles {
+			lines[i] = fmt.Sprintf("[%.2fs] %6s  %s", f.Duration, formatSize(f.Size), f.Path)
+		}
+		indices, ok, err := selecting.PromptInteractive(lines, os.Stdin, os.Stderr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 1
+		}
+		if !ok || len(indices) == 0 {
+			fmt.Println("No files selected. Nothing to delete.")
+			return 0
+		}
+		var filtered []ProbeResult
+		for _, idx := range indices {
+			filtered = append(filtered, summary.MatchedFiles[idx-1])
+		}
+		selectedFiles = filtered
+
+		if !confirmInteractive(os.Stdin, os.Stderr) {
+			userCancelled = true
+		}
+	} else {
+		expr := cfg.SelectExpr
+		if expr == "" && cfg.Yes {
+			expr = "all"
+			fmt.Fprintf(os.Stderr, "Warning: --yes without --select defaults to 'all'. Use --select explicitly.\n")
+		}
+		if expr == "" {
+			fmt.Fprintf(os.Stderr, "Error: non-interactive mode requires --select. Use --select all to select everything.\n")
+			return 1
+		}
+
+		indices, err := selecting.Parse(expr, len(summary.MatchedFiles))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid --select expression: %v\n", err)
+			return 1
+		}
+		if len(indices) == 0 {
+			fmt.Println("No files selected. Nothing to delete.")
+			return 0
+		}
+		var filtered []ProbeResult
+		for _, idx := range indices {
+			filtered = append(filtered, summary.MatchedFiles[idx-1])
+		}
+		selectedFiles = filtered
+
+		if cfg.ConfirmDelete || cfg.Yes {
+			userCancelled = false
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: non-interactive mode requires --confirm-delete (or --yes) to proceed.\n")
+			return 1
+		}
+	}
+
+	if userCancelled {
+		fmt.Println("Deletion cancelled.")
+		return 0
+	}
+
+	if len(selectedFiles) > 0 {
+		delBar := progress.NewBar(os.Stderr, tty && !cfg.NoProgress)
+		delBar.Start("Deleting", len(selectedFiles))
+		performSelectedDeletes(&summary, selectedFiles, func(deleted int) {
+			delBar.Advance(deleted)
+		})
+		delBar.Finish()
 	}
 
 	printReport(cfg, summary)
@@ -84,8 +196,47 @@ func Run(cfg Config) int {
 	if summary.ScanErrors > 0 || summary.FailedProbes > 0 || summary.FailedDeletes > 0 {
 		return 2
 	}
-
 	return 0
+}
+
+func confirmInteractive(stdin *os.File, stderr *os.File) bool {
+	fmt.Fprintln(stderr)
+	fmt.Fprintf(stderr, "Type 'delete' to confirm permanent removal: ")
+	var input string
+	fmt.Fscanf(stdin, "%s", &input)
+	return strings.TrimSpace(input) == "delete"
+}
+
+func performSelectedDeletes(s *Summary, files []ProbeResult, onDelete func(int)) {
+	for _, r := range files {
+		if r.Error != nil {
+			continue
+		}
+		err := cleanup.Remove(r.Path)
+		if err != nil {
+			s.FailedDeletes++
+			s.DeleteErrors = append(s.DeleteErrors, ProbeResult{
+				Path:  r.Path,
+				Size:  r.Size,
+				Error: fmt.Errorf("delete failed: %w", err),
+			})
+		} else {
+			s.Deleted++
+		}
+		if onDelete != nil {
+			onDelete(s.Deleted)
+		}
+	}
+}
+
+func formatSize(size int64) string {
+	if size < 1024 {
+		return fmt.Sprintf("%d B", size)
+	}
+	if size < 1024*1024 {
+		return fmt.Sprintf("%.0f KB", float64(size)/1024)
+	}
+	return fmt.Sprintf("%.1f MB", float64(size)/(1024*1024))
 }
 
 // ValidateConfig checks the configuration and returns (exitCode, error).
@@ -127,7 +278,7 @@ func checkFFprobe(path string) error {
 	return nil
 }
 
-func probeAll(files []scan.VideoFile, ffprobePath string, workers int) []ProbeResult {
+func probeAll(files []scan.VideoFile, ffprobePath string, workers int, onProbe func()) []ProbeResult {
 	jobs := make(chan scan.VideoFile, len(files))
 	results := make(chan ProbeResult, len(files))
 
@@ -143,6 +294,9 @@ func probeAll(files []scan.VideoFile, ffprobePath string, workers int) []ProbeRe
 					Size:     f.Size,
 					Duration: dur,
 					Error:    err,
+				}
+				if onProbe != nil {
+					onProbe()
 				}
 			}
 		}()
@@ -186,7 +340,7 @@ func buildSummary(results []ProbeResult, totalFiles int, cfg Config) Summary {
 
 func printReport(cfg Config, s Summary) {
 	mode := "dry-run"
-	if !cfg.DryRun && cfg.Yes {
+	if !cfg.DryRun && s.Deleted > 0 {
 		mode = "delete"
 	}
 
@@ -195,18 +349,6 @@ func printReport(cfg Config, s Summary) {
 	fmt.Printf("Threshold: %.0fs\n", cfg.MaxDuration)
 	fmt.Printf("Mode: %s\n", mode)
 	fmt.Println()
-
-	if len(s.MatchedFiles) > 0 {
-		sort.Slice(s.MatchedFiles, func(i, j int) bool {
-			return s.MatchedFiles[i].Path < s.MatchedFiles[j].Path
-		})
-
-		fmt.Println("Matched files:")
-		for _, f := range s.MatchedFiles {
-			fmt.Printf("  [%.2fs] %s\n", f.Duration, f.Path)
-		}
-		fmt.Println()
-	}
 
 	fmt.Println("Summary:")
 	fmt.Printf("  scanned files: %d\n", s.ScannedFiles)
@@ -219,20 +361,5 @@ func printReport(cfg Config, s Summary) {
 }
 
 func performDeletes(s *Summary) {
-	for _, r := range s.MatchedFiles {
-		if r.Error != nil {
-			continue
-		}
-		err := cleanup.Remove(r.Path)
-		if err != nil {
-			s.FailedDeletes++
-			s.DeleteErrors = append(s.DeleteErrors, ProbeResult{
-				Path:  r.Path,
-				Size:  r.Size,
-				Error: fmt.Errorf("delete failed: %w", err),
-			})
-		} else {
-			s.Deleted++
-		}
-	}
+	performSelectedDeletes(s, s.MatchedFiles, nil)
 }

@@ -27,6 +27,9 @@ func parseFlags() app.Config {
 	var extensions string
 	var ffprobe string
 	var verbose bool
+	var selectExpr string
+	var confirmDelete bool
+	var noProgress bool
 
 	flag.StringVar(&dir, "dir", "", "Directory to scan (required)")
 	flag.StringVar(&dir, "d", "", "Directory to scan (short)")
@@ -35,8 +38,8 @@ func parseFlags() app.Config {
 	flag.BoolVar(&recursive, "recursive", false, "Scan subdirectories recursively")
 	flag.BoolVar(&recursive, "r", false, "Scan subdirectories recursively (short)")
 	flag.BoolVar(&dryRun, "dry-run", true, "Preview mode, no files are deleted (default true)")
-	flag.BoolVar(&yes, "yes", false, "Actually delete matched files")
-	flag.BoolVar(&yes, "y", false, "Actually delete matched files (short)")
+	flag.BoolVar(&yes, "yes", false, "Confirm deletion (non-interactive)")
+	flag.BoolVar(&yes, "y", false, "Confirm deletion non-interactive (short)")
 	flag.IntVar(&workers, "workers", runtime.NumCPU(), "Number of concurrent ffprobe workers")
 	flag.IntVar(&workers, "w", runtime.NumCPU(), "Number of concurrent workers (short)")
 	flag.StringVar(&extensions, "extensions", strings.Join(scan.DefaultExtensions(), ","), "Comma-separated video file extensions")
@@ -44,6 +47,9 @@ func parseFlags() app.Config {
 	flag.StringVar(&ffprobe, "ffprobe", "ffprobe", "Path to ffprobe executable")
 	flag.BoolVar(&verbose, "verbose", false, "Verbose output")
 	flag.BoolVar(&verbose, "v", false, "Verbose output (short)")
+	flag.StringVar(&selectExpr, "select", "", "Non-interactive selection expression: all, 1,2,5, 1-5, all,-2")
+	flag.BoolVar(&confirmDelete, "confirm-delete", false, "Non-interactive deletion confirmation")
+	flag.BoolVar(&noProgress, "no-progress", false, "Disable progress display")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: vidc -d <directory> -m <seconds> [flags]\n\n")
@@ -51,8 +57,9 @@ func parseFlags() app.Config {
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  vidc -d \"D:\\videos\" -m 10                     Dry-run, preview short videos\n")
-		fmt.Fprintf(os.Stderr, "  vidc -d \"D:\\videos\" -m 10 -r -y --dry-run=false  Delete short videos recursively\n")
+		fmt.Fprintf(os.Stderr, "  vidc -d \"D:\\videos\" -m 10                          Dry-run, preview short videos\n")
+		fmt.Fprintf(os.Stderr, "  vidc -d \"D:\\videos\" -m 10 -r --dry-run=false       Interactive delete with selection\n")
+		fmt.Fprintf(os.Stderr, "  vidc -d \"D:\\videos\" -m 10 -r --dry-run=false --select all --confirm-delete  Scripted delete all\n")
 	}
 
 	flag.Parse()
@@ -60,15 +67,18 @@ func parseFlags() app.Config {
 	exts := parseExtensions(extensions)
 
 	return app.Config{
-		Dir:         dir,
-		MaxDuration: maxDuration,
-		Recursive:   recursive,
-		DryRun:      dryRun,
-		Yes:         yes,
-		Workers:     workers,
-		Extensions:  exts,
-		FFprobePath: ffprobe,
-		Verbose:     verbose,
+		Dir:           dir,
+		MaxDuration:   maxDuration,
+		Recursive:     recursive,
+		DryRun:        dryRun,
+		Yes:           yes,
+		Workers:       workers,
+		Extensions:    exts,
+		FFprobePath:   ffprobe,
+		Verbose:       verbose,
+		SelectExpr:    selectExpr,
+		ConfirmDelete: confirmDelete,
+		NoProgress:    noProgress,
 	}
 }
 

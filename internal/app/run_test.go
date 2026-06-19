@@ -429,3 +429,325 @@ func TestSummary_ScanErrorsTracked(t *testing.T) {
 		t.Error("ScanErrors not preserved")
 	}
 }
+
+func TestRun_SelectAll_NonInteractive(t *testing.T) {
+	tmp := setupFakeEnv(t)
+	defer os.RemoveAll(tmp)
+
+	oldLook := lookPath
+	lookPath = func(path string) (string, error) { return path, nil }
+	defer func() { lookPath = oldLook }()
+
+	oldProbe := probeFile
+	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+		if strings.Contains(filepath.Base(videoPath), "short") {
+			return 3.2, nil
+		}
+		return 12.345, nil
+	}
+	defer func() { probeFile = oldProbe }()
+
+	cfg := Config{
+		Dir:           filepath.Join(tmp, "videos"),
+		MaxDuration:   10,
+		Recursive:     false,
+		DryRun:        false,
+		Yes:           false,
+		Workers:       2,
+		Extensions:    scan.DefaultExtensions(),
+		FFprobePath:   "ffprobe",
+		SelectExpr:    "all",
+		ConfirmDelete: true,
+	}
+
+	code := Run(cfg)
+	if code != 0 && code != 2 {
+		t.Errorf("unexpected exit code: %d", code)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, "videos", "short.mp4")); !os.IsNotExist(err) {
+		t.Error("short.mp4 should have been deleted")
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "videos", "long.mp4")); os.IsNotExist(err) {
+		t.Error("long.mp4 should remain")
+	}
+}
+
+func TestRun_SelectByNumber_NonInteractive(t *testing.T) {
+	tmp := setupFakeEnv(t)
+	defer os.RemoveAll(tmp)
+
+	oldLook := lookPath
+	lookPath = func(path string) (string, error) { return path, nil }
+	defer func() { lookPath = oldLook }()
+
+	oldProbe := probeFile
+	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+		return 3.2, nil
+	}
+	defer func() { probeFile = oldProbe }()
+
+	cfg := Config{
+		Dir:           filepath.Join(tmp, "videos"),
+		MaxDuration:   10,
+		Recursive:     false,
+		DryRun:        false,
+		Yes:           false,
+		Workers:       2,
+		Extensions:    scan.DefaultExtensions(),
+		FFprobePath:   "ffprobe",
+		SelectExpr:    "1",
+		ConfirmDelete: true,
+	}
+
+	code := Run(cfg)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+}
+
+func TestRun_NonInteractive_MissingConfirm(t *testing.T) {
+	tmp := setupFakeEnv(t)
+	defer os.RemoveAll(tmp)
+
+	oldLook := lookPath
+	lookPath = func(path string) (string, error) { return path, nil }
+	defer func() { lookPath = oldLook }()
+
+	oldProbe := probeFile
+	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+		return 3.2, nil
+	}
+	defer func() { probeFile = oldProbe }()
+
+	cfg := Config{
+		Dir:           filepath.Join(tmp, "videos"),
+		MaxDuration:   10,
+		Recursive:     false,
+		DryRun:        false,
+		Yes:           false,
+		Workers:       2,
+		Extensions:    scan.DefaultExtensions(),
+		FFprobePath:   "ffprobe",
+		SelectExpr:    "all",
+		ConfirmDelete: false,
+	}
+
+	code := Run(cfg)
+	if code != 1 {
+		t.Errorf("expected exit code 1 for missing confirm, got %d", code)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, "videos", "short.mp4")); os.IsNotExist(err) {
+		t.Error("short.mp4 should not be deleted without confirm")
+	}
+}
+
+func TestRun_NonInteractive_MissingSelect(t *testing.T) {
+	tmp := setupFakeEnv(t)
+	defer os.RemoveAll(tmp)
+
+	oldLook := lookPath
+	lookPath = func(path string) (string, error) { return path, nil }
+	defer func() { lookPath = oldLook }()
+
+	oldProbe := probeFile
+	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+		return 3.2, nil
+	}
+	defer func() { probeFile = oldProbe }()
+
+	cfg := Config{
+		Dir:           filepath.Join(tmp, "videos"),
+		MaxDuration:   10,
+		Recursive:     false,
+		DryRun:        false,
+		Yes:           false,
+		Workers:       2,
+		Extensions:    scan.DefaultExtensions(),
+		FFprobePath:   "ffprobe",
+		SelectExpr:    "",
+		ConfirmDelete: true,
+	}
+
+	code := Run(cfg)
+	if code != 1 {
+		t.Errorf("expected exit code 1 for missing select, got %d", code)
+	}
+}
+
+func TestRun_YesBackwardCompat(t *testing.T) {
+	tmp := setupFakeEnv(t)
+	defer os.RemoveAll(tmp)
+
+	oldLook := lookPath
+	lookPath = func(path string) (string, error) { return path, nil }
+	defer func() { lookPath = oldLook }()
+
+	oldProbe := probeFile
+	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+		if strings.Contains(filepath.Base(videoPath), "short") {
+			return 3.2, nil
+		}
+		return 12.345, nil
+	}
+	defer func() { probeFile = oldProbe }()
+
+	cfg := Config{
+		Dir:         filepath.Join(tmp, "videos"),
+		MaxDuration: 10,
+		Recursive:   false,
+		DryRun:      false,
+		Yes:         true,
+		Workers:     2,
+		Extensions:  scan.DefaultExtensions(),
+		FFprobePath: "ffprobe",
+	}
+
+	code := Run(cfg)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, "videos", "short.mp4")); !os.IsNotExist(err) {
+		t.Error("short.mp4 should have been deleted")
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "videos", "long.mp4")); os.IsNotExist(err) {
+		t.Error("long.mp4 should remain")
+	}
+}
+
+func TestRun_DryRun_NeverDeletes(t *testing.T) {
+	tmp := setupFakeEnv(t)
+	defer os.RemoveAll(tmp)
+
+	oldLook := lookPath
+	lookPath = func(path string) (string, error) { return path, nil }
+	defer func() { lookPath = oldLook }()
+
+	oldProbe := probeFile
+	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+		return 3.2, nil
+	}
+	defer func() { probeFile = oldProbe }()
+
+	cfg := Config{
+		Dir:           filepath.Join(tmp, "videos"),
+		MaxDuration:   10,
+		Recursive:     false,
+		DryRun:        true,
+		Yes:           false,
+		Workers:       2,
+		Extensions:    scan.DefaultExtensions(),
+		FFprobePath:   "ffprobe",
+		SelectExpr:    "all",
+		ConfirmDelete: true,
+	}
+
+	code := Run(cfg)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, "videos", "short.mp4")); os.IsNotExist(err) {
+		t.Error("dry-run should not delete files")
+	}
+}
+
+func TestRun_InvalidSelectExpr(t *testing.T) {
+	tmp := setupFakeEnv(t)
+	defer os.RemoveAll(tmp)
+
+	oldLook := lookPath
+	lookPath = func(path string) (string, error) { return path, nil }
+	defer func() { lookPath = oldLook }()
+
+	oldProbe := probeFile
+	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+		return 3.2, nil
+	}
+	defer func() { probeFile = oldProbe }()
+
+	cfg := Config{
+		Dir:           filepath.Join(tmp, "videos"),
+		MaxDuration:   10,
+		Recursive:     false,
+		DryRun:        false,
+		Yes:           false,
+		Workers:       2,
+		Extensions:    scan.DefaultExtensions(),
+		FFprobePath:   "ffprobe",
+		SelectExpr:    "invalid",
+		ConfirmDelete: true,
+	}
+
+	code := Run(cfg)
+	if code != 1 {
+		t.Errorf("expected exit code 1 for invalid expression, got %d", code)
+	}
+}
+
+func TestPerformSelectedDeletes(t *testing.T) {
+	dir := t.TempDir()
+	f1 := filepath.Join(dir, "a.mp4")
+	f2 := filepath.Join(dir, "b.mp4")
+	os.WriteFile(f1, []byte("data"), 0644)
+	os.WriteFile(f2, []byte("data"), 0644)
+
+	s := &Summary{}
+	files := []ProbeResult{
+		{Path: f1, Size: 4, Duration: 1.0},
+		{Path: f2, Size: 4, Duration: 2.0},
+	}
+	performSelectedDeletes(s, files[:1], nil)
+
+	if s.Deleted != 1 {
+		t.Errorf("expected 1 deleted, got %d", s.Deleted)
+	}
+	if _, err := os.Stat(f1); !os.IsNotExist(err) {
+		t.Error("f1 should have been deleted")
+	}
+	if _, err := os.Stat(f2); os.IsNotExist(err) {
+		t.Error("f2 should still exist")
+	}
+}
+
+func TestPerformSelectedDeletes_WithProgress(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "x.mp4")
+	os.WriteFile(f, []byte("data"), 0644)
+
+	s := &Summary{}
+	progressCalls := 0
+	files := []ProbeResult{{Path: f, Size: 4, Duration: 1.0}}
+	performSelectedDeletes(s, files, func(deleted int) {
+		progressCalls++
+	})
+
+	if progressCalls != 1 {
+		t.Errorf("expected 1 progress call, got %d", progressCalls)
+	}
+	if s.Deleted != 1 {
+		t.Errorf("expected 1 deleted, got %d", s.Deleted)
+	}
+}
+
+func TestFormatSize(t *testing.T) {
+	tests := []struct {
+		size     int64
+		expected string
+	}{
+		{0, "0 B"},
+		{500, "500 B"},
+		{1024, "1 KB"},
+		{1536, "2 KB"},
+		{1048576, "1.0 MB"},
+		{1572864, "1.5 MB"},
+	}
+	for _, tc := range tests {
+		got := formatSize(tc.size)
+		if got != tc.expected {
+			t.Errorf("formatSize(%d): expected %q, got %q", tc.size, tc.expected, got)
+		}
+	}
+}
