@@ -3,24 +3,30 @@ package app
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"vidc/internal/cleanup"
 	"vidc/internal/scan"
 )
 
+func fakeLookPath(path string) (string, error) { return path, nil }
+
+func fakeLookPathNotFound(path string) (string, error) { return "", fmt.Errorf("not found") }
+
 func TestValidateConfig_MissingDir(t *testing.T) {
-	_, err := ValidateConfig(Config{Dir: ""})
+	_, err := ValidateConfig(Config{Dir: ""}, fakeLookPath)
 	if err == nil {
 		t.Error("expected error for missing dir")
 	}
 }
 
 func TestValidateConfig_NonExistentDir(t *testing.T) {
-	_, err := ValidateConfig(Config{Dir: "/nonexistent/dir"})
+	_, err := ValidateConfig(Config{Dir: "/nonexistent/dir"}, fakeLookPath)
 	if err == nil {
 		t.Error("expected error for non-existent dir")
 	}
@@ -32,7 +38,7 @@ func TestValidateConfig_NotADirectory(t *testing.T) {
 	if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := ValidateConfig(Config{Dir: f})
+	_, err := ValidateConfig(Config{Dir: f}, fakeLookPath)
 	if err == nil {
 		t.Error("expected error for non-directory path")
 	}
@@ -40,11 +46,7 @@ func TestValidateConfig_NotADirectory(t *testing.T) {
 
 func TestValidateConfig_ZeroMaxDuration(t *testing.T) {
 	dir := t.TempDir()
-	old := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = old }()
-
-	_, err := ValidateConfig(Config{Dir: dir, MaxDuration: 0, Workers: 1})
+	_, err := ValidateConfig(Config{Dir: dir, MaxDuration: 0, Workers: 1}, fakeLookPath)
 	if err == nil {
 		t.Error("expected error for zero max-duration")
 	}
@@ -52,11 +54,7 @@ func TestValidateConfig_ZeroMaxDuration(t *testing.T) {
 
 func TestValidateConfig_ZeroWorkers(t *testing.T) {
 	dir := t.TempDir()
-	old := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = old }()
-
-	_, err := ValidateConfig(Config{Dir: dir, MaxDuration: 5, Workers: 0})
+	_, err := ValidateConfig(Config{Dir: dir, MaxDuration: 5, Workers: 0}, fakeLookPath)
 	if err == nil {
 		t.Error("expected error for zero workers")
 	}
@@ -64,11 +62,7 @@ func TestValidateConfig_ZeroWorkers(t *testing.T) {
 
 func TestValidateConfig_FFprobeNotFound(t *testing.T) {
 	dir := t.TempDir()
-	old := lookPath
-	lookPath = func(path string) (string, error) { return "", fmt.Errorf("not found") }
-	defer func() { lookPath = old }()
-
-	_, err := ValidateConfig(Config{Dir: dir, MaxDuration: 5, Workers: 1})
+	_, err := ValidateConfig(Config{Dir: dir, MaxDuration: 5, Workers: 1}, fakeLookPathNotFound)
 	if err == nil {
 		t.Error("expected error for missing ffprobe")
 	}
@@ -76,11 +70,7 @@ func TestValidateConfig_FFprobeNotFound(t *testing.T) {
 
 func TestValidateConfig_Valid(t *testing.T) {
 	dir := t.TempDir()
-	old := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = old }()
-
-	code, err := ValidateConfig(Config{Dir: dir, MaxDuration: 5, Workers: 2})
+	code, err := ValidateConfig(Config{Dir: dir, MaxDuration: 5, Workers: 2}, fakeLookPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -126,131 +116,6 @@ func TestBuildSummary_Boundary(t *testing.T) {
 
 	if summary.Matched != 1 {
 		t.Errorf("Boundary: duration == threshold should not match, expected 1, got %d", summary.Matched)
-	}
-}
-
-func TestRun_DryRun(t *testing.T) {
-	tmp := setupFakeEnv(t)
-	defer os.RemoveAll(tmp)
-
-	oldLook := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = oldLook }()
-
-	oldProbe := probeFile
-	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
-		if strings.Contains(filepath.Base(videoPath), "short") {
-			return 3.2, nil
-		}
-		return 12.345, nil
-	}
-	defer func() { probeFile = oldProbe }()
-
-	cfg := Config{
-		Dir:         filepath.Join(tmp, "videos"),
-		MaxDuration: 10,
-		Recursive:   false,
-		DryRun:      true,
-		Yes:         false,
-		Workers:     2,
-		Extensions:  scan.DefaultExtensions(),
-		FFprobePath: "ffprobe",
-	}
-
-	code := Run(cfg)
-	if code != 0 {
-		t.Errorf("expected exit code 0, got %d", code)
-	}
-
-	paths := []string{
-		filepath.Join(tmp, "videos", "short.mp4"),
-		filepath.Join(tmp, "videos", "long.mp4"),
-	}
-	for _, p := range paths {
-		if _, err := os.Stat(p); os.IsNotExist(err) {
-			t.Errorf("dry-run should not delete %s", p)
-		}
-	}
-}
-
-func TestRun_Delete(t *testing.T) {
-	tmp := setupFakeEnv(t)
-	defer os.RemoveAll(tmp)
-
-	oldLook := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = oldLook }()
-
-	oldProbe := probeFile
-	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
-		if strings.Contains(filepath.Base(videoPath), "short") {
-			return 3.2, nil
-		}
-		return 12.345, nil
-	}
-	defer func() { probeFile = oldProbe }()
-
-	cfg := Config{
-		Dir:         filepath.Join(tmp, "videos"),
-		MaxDuration: 10,
-		Recursive:   false,
-		DryRun:      false,
-		Yes:         true,
-		Workers:     2,
-		Extensions:  scan.DefaultExtensions(),
-		FFprobePath: "ffprobe",
-	}
-
-	code := Run(cfg)
-	if code != 0 && code != 2 {
-		t.Errorf("unexpected exit code: %d", code)
-	}
-
-	if _, err := os.Stat(filepath.Join(tmp, "videos", "short.mp4")); !os.IsNotExist(err) {
-		t.Error("short.mp4 should have been deleted")
-	}
-	if _, err := os.Stat(filepath.Join(tmp, "videos", "long.mp4")); os.IsNotExist(err) {
-		t.Error("long.mp4 should remain")
-	}
-}
-
-func TestRun_NoMatch(t *testing.T) {
-	tmp := setupFakeEnv(t)
-	defer os.RemoveAll(tmp)
-
-	oldLook := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = oldLook }()
-
-	oldProbe := probeFile
-	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
-		if strings.Contains(filepath.Base(videoPath), "short") {
-			return 3.2, nil
-		}
-		return 12.345, nil
-	}
-	defer func() { probeFile = oldProbe }()
-
-	cfg := Config{
-		Dir:         filepath.Join(tmp, "videos"),
-		MaxDuration: 2,
-		Recursive:   false,
-		DryRun:      true,
-		Yes:         false,
-		Workers:     2,
-		Extensions:  scan.DefaultExtensions(),
-		FFprobePath: "ffprobe",
-	}
-
-	code := Run(cfg)
-	if code != 0 {
-		t.Errorf("expected exit code 0, got %d", code)
-	}
-
-	for _, name := range []string{"short.mp4", "long.mp4", "notes.txt"} {
-		if _, err := os.Stat(filepath.Join(tmp, "videos", name)); os.IsNotExist(err) {
-			t.Errorf("%s should still exist", name)
-		}
 	}
 }
 
@@ -318,7 +183,6 @@ func TestPerformDeletes_NonExistent(t *testing.T) {
 	}
 }
 
-// setupFakeEnv creates a temp directory with test video files.
 func setupFakeEnv(t *testing.T) string {
 	t.Helper()
 	tmp := t.TempDir()
@@ -333,6 +197,114 @@ func setupFakeEnv(t *testing.T) string {
 	os.WriteFile(filepath.Join(videosDir, "notes.txt"), []byte("data"), 0644)
 
 	return tmp
+}
+
+func fakeProbeShort(videoPath string) float64 {
+	if strings.Contains(filepath.Base(videoPath), "short") {
+		return 3.2
+	}
+	return 12.345
+}
+
+func newRunnerForTest(t *testing.T, cfg Config, probeFn func(string) float64) *Runner {
+	t.Helper()
+	return NewRunner(Deps{
+		LookPath:   fakeLookPath,
+		IsTerminal: func() bool { return false },
+		ProbeFile: func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+			return probeFn(videoPath), nil
+		},
+		RemoveFile: cleanup.Remove,
+		Stdout:     io.Discard,
+		Stderr:     io.Discard,
+		Stdin:      &bytes.Buffer{},
+	})
+}
+
+func TestRun_DryRun(t *testing.T) {
+	tmp := setupFakeEnv(t)
+	defer os.RemoveAll(tmp)
+
+	cfg := Config{
+		Dir:         filepath.Join(tmp, "videos"),
+		MaxDuration: 10,
+		Recursive:   false,
+		DryRun:      true,
+		Yes:         false,
+		Workers:     2,
+		Extensions:  scan.DefaultExtensions(),
+		FFprobePath: "ffprobe",
+	}
+	runner := newRunnerForTest(t, cfg, fakeProbeShort)
+	code := runner.Run(cfg)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+
+	paths := []string{
+		filepath.Join(tmp, "videos", "short.mp4"),
+		filepath.Join(tmp, "videos", "long.mp4"),
+	}
+	for _, p := range paths {
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			t.Errorf("dry-run should not delete %s", p)
+		}
+	}
+}
+
+func TestRun_Delete(t *testing.T) {
+	tmp := setupFakeEnv(t)
+	defer os.RemoveAll(tmp)
+
+	cfg := Config{
+		Dir:         filepath.Join(tmp, "videos"),
+		MaxDuration: 10,
+		Recursive:   false,
+		DryRun:      false,
+		Yes:         true,
+		Workers:     2,
+		Extensions:  scan.DefaultExtensions(),
+		FFprobePath: "ffprobe",
+	}
+	runner := newRunnerForTest(t, cfg, fakeProbeShort)
+	code := runner.Run(cfg)
+	if code != 0 && code != 2 {
+		t.Errorf("unexpected exit code: %d", code)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, "videos", "short.mp4")); !os.IsNotExist(err) {
+		t.Error("short.mp4 should have been deleted")
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "videos", "long.mp4")); os.IsNotExist(err) {
+		t.Error("long.mp4 should remain")
+	}
+}
+
+func TestRun_NoMatch(t *testing.T) {
+	tmp := setupFakeEnv(t)
+	defer os.RemoveAll(tmp)
+
+	cfg := Config{
+		Dir:         filepath.Join(tmp, "videos"),
+		MaxDuration: 2,
+		Recursive:   false,
+		DryRun:      true,
+		Yes:         false,
+		Workers:     2,
+		Extensions:  scan.DefaultExtensions(),
+		FFprobePath: "ffprobe",
+	}
+	runner := newRunnerForTest(t, cfg, fakeProbeShort)
+	code := runner.Run(cfg)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+
+	for _, name := range []string{"short.mp4", "long.mp4", "notes.txt"} {
+		if _, err := os.Stat(filepath.Join(tmp, "videos", name)); os.IsNotExist(err) {
+			t.Errorf("%s should still exist", name)
+		}
+	}
 }
 
 func TestBuildSummary_EmptyResults(t *testing.T) {
@@ -356,22 +328,11 @@ func TestProbeResult_ErrorPreserved(t *testing.T) {
 }
 
 func TestRun_ScanErrors_Returns2(t *testing.T) {
-	oldLook := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = oldLook }()
-
-	oldProbe := probeFile
-	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
-		return 12.0, nil
-	}
-	defer func() { probeFile = oldProbe }()
-
 	tmp := t.TempDir()
 	videosDir := filepath.Join(tmp, "videos")
 	os.MkdirAll(videosDir, 0755)
 	os.WriteFile(filepath.Join(videosDir, "a.mp4"), []byte("x"), 0644)
 
-	// Create an unreadable subdirectory (Windows: make it unreadable with a restricted path)
 	badDir := filepath.Join(videosDir, "bad")
 	os.MkdirAll(badDir, 0755)
 	os.WriteFile(filepath.Join(badDir, "b.mov"), []byte("x"), 0644)
@@ -386,26 +347,24 @@ func TestRun_ScanErrors_Returns2(t *testing.T) {
 		Extensions:  scan.DefaultExtensions(),
 		FFprobePath: "ffprobe",
 	}
-
-	code := Run(cfg)
-	// With no scan errors, this should return 0
+	runner := NewRunner(Deps{
+		LookPath:   fakeLookPath,
+		IsTerminal: func() bool { return false },
+		ProbeFile: func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+			return 12.0, nil
+		},
+		RemoveFile: cleanup.Remove,
+		Stdout:     io.Discard,
+		Stderr:     io.Discard,
+		Stdin:      &bytes.Buffer{},
+	})
+	code := runner.Run(cfg)
 	if code != 0 {
 		t.Errorf("expected exit code 0 without scan errors, got %d", code)
 	}
 }
 
 func TestRun_NoFiles_ScanErrors(t *testing.T) {
-	oldLook := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = oldLook }()
-
-	oldProbe := probeFile
-	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
-		return 5.0, nil
-	}
-	defer func() { probeFile = oldProbe }()
-
-	// Empty directory with no video files — should succeed with 0
 	tmp := t.TempDir()
 	cfg := Config{
 		Dir:         tmp,
@@ -417,8 +376,18 @@ func TestRun_NoFiles_ScanErrors(t *testing.T) {
 		Extensions:  scan.DefaultExtensions(),
 		FFprobePath: "ffprobe",
 	}
-
-	code := Run(cfg)
+	runner := NewRunner(Deps{
+		LookPath:   fakeLookPath,
+		IsTerminal: func() bool { return false },
+		ProbeFile: func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+			return 5.0, nil
+		},
+		RemoveFile: cleanup.Remove,
+		Stdout:     io.Discard,
+		Stderr:     io.Discard,
+		Stdin:      &bytes.Buffer{},
+	})
+	code := runner.Run(cfg)
 	if code != 0 {
 		t.Errorf("empty dir should return 0, got %d", code)
 	}
@@ -435,19 +404,6 @@ func TestRun_SelectAll_NonInteractive(t *testing.T) {
 	tmp := setupFakeEnv(t)
 	defer os.RemoveAll(tmp)
 
-	oldLook := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = oldLook }()
-
-	oldProbe := probeFile
-	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
-		if strings.Contains(filepath.Base(videoPath), "short") {
-			return 3.2, nil
-		}
-		return 12.345, nil
-	}
-	defer func() { probeFile = oldProbe }()
-
 	cfg := Config{
 		Dir:           filepath.Join(tmp, "videos"),
 		MaxDuration:   10,
@@ -460,8 +416,8 @@ func TestRun_SelectAll_NonInteractive(t *testing.T) {
 		SelectExpr:    "all",
 		ConfirmDelete: true,
 	}
-
-	code := Run(cfg)
+	runner := newRunnerForTest(t, cfg, fakeProbeShort)
+	code := runner.Run(cfg)
 	if code != 0 && code != 2 {
 		t.Errorf("unexpected exit code: %d", code)
 	}
@@ -478,16 +434,6 @@ func TestRun_SelectByNumber_NonInteractive(t *testing.T) {
 	tmp := setupFakeEnv(t)
 	defer os.RemoveAll(tmp)
 
-	oldLook := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = oldLook }()
-
-	oldProbe := probeFile
-	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
-		return 3.2, nil
-	}
-	defer func() { probeFile = oldProbe }()
-
 	cfg := Config{
 		Dir:           filepath.Join(tmp, "videos"),
 		MaxDuration:   10,
@@ -500,8 +446,18 @@ func TestRun_SelectByNumber_NonInteractive(t *testing.T) {
 		SelectExpr:    "1",
 		ConfirmDelete: true,
 	}
-
-	code := Run(cfg)
+	runner := NewRunner(Deps{
+		LookPath:   fakeLookPath,
+		IsTerminal: func() bool { return false },
+		ProbeFile: func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+			return 3.2, nil
+		},
+		RemoveFile: cleanup.Remove,
+		Stdout:     io.Discard,
+		Stderr:     io.Discard,
+		Stdin:      &bytes.Buffer{},
+	})
+	code := runner.Run(cfg)
 	if code != 0 {
 		t.Errorf("expected exit code 0, got %d", code)
 	}
@@ -510,16 +466,6 @@ func TestRun_SelectByNumber_NonInteractive(t *testing.T) {
 func TestRun_NonInteractive_MissingConfirm(t *testing.T) {
 	tmp := setupFakeEnv(t)
 	defer os.RemoveAll(tmp)
-
-	oldLook := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = oldLook }()
-
-	oldProbe := probeFile
-	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
-		return 3.2, nil
-	}
-	defer func() { probeFile = oldProbe }()
 
 	cfg := Config{
 		Dir:           filepath.Join(tmp, "videos"),
@@ -533,8 +479,18 @@ func TestRun_NonInteractive_MissingConfirm(t *testing.T) {
 		SelectExpr:    "all",
 		ConfirmDelete: false,
 	}
-
-	code := Run(cfg)
+	runner := NewRunner(Deps{
+		LookPath:   fakeLookPath,
+		IsTerminal: func() bool { return false },
+		ProbeFile: func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+			return 3.2, nil
+		},
+		RemoveFile: cleanup.Remove,
+		Stdout:     io.Discard,
+		Stderr:     io.Discard,
+		Stdin:      &bytes.Buffer{},
+	})
+	code := runner.Run(cfg)
 	if code != 1 {
 		t.Errorf("expected exit code 1 for missing confirm, got %d", code)
 	}
@@ -548,16 +504,6 @@ func TestRun_NonInteractive_MissingSelect(t *testing.T) {
 	tmp := setupFakeEnv(t)
 	defer os.RemoveAll(tmp)
 
-	oldLook := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = oldLook }()
-
-	oldProbe := probeFile
-	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
-		return 3.2, nil
-	}
-	defer func() { probeFile = oldProbe }()
-
 	cfg := Config{
 		Dir:           filepath.Join(tmp, "videos"),
 		MaxDuration:   10,
@@ -570,8 +516,18 @@ func TestRun_NonInteractive_MissingSelect(t *testing.T) {
 		SelectExpr:    "",
 		ConfirmDelete: true,
 	}
-
-	code := Run(cfg)
+	runner := NewRunner(Deps{
+		LookPath:   fakeLookPath,
+		IsTerminal: func() bool { return false },
+		ProbeFile: func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+			return 3.2, nil
+		},
+		RemoveFile: cleanup.Remove,
+		Stdout:     io.Discard,
+		Stderr:     io.Discard,
+		Stdin:      &bytes.Buffer{},
+	})
+	code := runner.Run(cfg)
 	if code != 1 {
 		t.Errorf("expected exit code 1 for missing select, got %d", code)
 	}
@@ -580,19 +536,6 @@ func TestRun_NonInteractive_MissingSelect(t *testing.T) {
 func TestRun_YesBackwardCompat(t *testing.T) {
 	tmp := setupFakeEnv(t)
 	defer os.RemoveAll(tmp)
-
-	oldLook := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = oldLook }()
-
-	oldProbe := probeFile
-	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
-		if strings.Contains(filepath.Base(videoPath), "short") {
-			return 3.2, nil
-		}
-		return 12.345, nil
-	}
-	defer func() { probeFile = oldProbe }()
 
 	cfg := Config{
 		Dir:         filepath.Join(tmp, "videos"),
@@ -604,8 +547,8 @@ func TestRun_YesBackwardCompat(t *testing.T) {
 		Extensions:  scan.DefaultExtensions(),
 		FFprobePath: "ffprobe",
 	}
-
-	code := Run(cfg)
+	runner := newRunnerForTest(t, cfg, fakeProbeShort)
+	code := runner.Run(cfg)
 	if code != 0 {
 		t.Errorf("expected exit code 0, got %d", code)
 	}
@@ -622,16 +565,6 @@ func TestRun_DryRun_NeverDeletes(t *testing.T) {
 	tmp := setupFakeEnv(t)
 	defer os.RemoveAll(tmp)
 
-	oldLook := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = oldLook }()
-
-	oldProbe := probeFile
-	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
-		return 3.2, nil
-	}
-	defer func() { probeFile = oldProbe }()
-
 	cfg := Config{
 		Dir:           filepath.Join(tmp, "videos"),
 		MaxDuration:   10,
@@ -644,8 +577,18 @@ func TestRun_DryRun_NeverDeletes(t *testing.T) {
 		SelectExpr:    "all",
 		ConfirmDelete: true,
 	}
-
-	code := Run(cfg)
+	runner := NewRunner(Deps{
+		LookPath:   fakeLookPath,
+		IsTerminal: func() bool { return false },
+		ProbeFile: func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+			return 3.2, nil
+		},
+		RemoveFile: cleanup.Remove,
+		Stdout:     io.Discard,
+		Stderr:     io.Discard,
+		Stdin:      &bytes.Buffer{},
+	})
+	code := runner.Run(cfg)
 	if code != 0 {
 		t.Errorf("expected exit code 0, got %d", code)
 	}
@@ -659,16 +602,6 @@ func TestRun_InvalidSelectExpr(t *testing.T) {
 	tmp := setupFakeEnv(t)
 	defer os.RemoveAll(tmp)
 
-	oldLook := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = oldLook }()
-
-	oldProbe := probeFile
-	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
-		return 3.2, nil
-	}
-	defer func() { probeFile = oldProbe }()
-
 	cfg := Config{
 		Dir:           filepath.Join(tmp, "videos"),
 		MaxDuration:   10,
@@ -681,8 +614,18 @@ func TestRun_InvalidSelectExpr(t *testing.T) {
 		SelectExpr:    "invalid",
 		ConfirmDelete: true,
 	}
-
-	code := Run(cfg)
+	runner := NewRunner(Deps{
+		LookPath:   fakeLookPath,
+		IsTerminal: func() bool { return false },
+		ProbeFile: func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+			return 3.2, nil
+		},
+		RemoveFile: cleanup.Remove,
+		Stdout:     io.Discard,
+		Stderr:     io.Discard,
+		Stdin:      &bytes.Buffer{},
+	})
+	code := runner.Run(cfg)
 	if code != 1 {
 		t.Errorf("expected exit code 1 for invalid expression, got %d", code)
 	}
@@ -700,7 +643,7 @@ func TestPerformSelectedDeletes(t *testing.T) {
 		{Path: f1, Size: 4, Duration: 1.0},
 		{Path: f2, Size: 4, Duration: 2.0},
 	}
-	performSelectedDeletes(s, files[:1], nil)
+	performSelectedDeletes(s, files[:1], cleanup.Remove, nil)
 
 	if s.Deleted != 1 {
 		t.Errorf("expected 1 deleted, got %d", s.Deleted)
@@ -721,7 +664,7 @@ func TestPerformSelectedDeletes_WithProgress(t *testing.T) {
 	s := &Summary{}
 	progressCalls := 0
 	files := []ProbeResult{{Path: f, Size: 4, Duration: 1.0}}
-	performSelectedDeletes(s, files, func(deleted int) {
+	performSelectedDeletes(s, files, cleanup.Remove, func(deleted int) {
 		progressCalls++
 	})
 
@@ -757,16 +700,6 @@ func TestRun_NoMatch_DeleteMode(t *testing.T) {
 	tmp := setupFakeEnv(t)
 	defer os.RemoveAll(tmp)
 
-	oldLook := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = oldLook }()
-
-	oldProbe := probeFile
-	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
-		return 12.0, nil
-	}
-	defer func() { probeFile = oldProbe }()
-
 	cfg := Config{
 		Dir:         filepath.Join(tmp, "videos"),
 		MaxDuration: 5,
@@ -777,8 +710,18 @@ func TestRun_NoMatch_DeleteMode(t *testing.T) {
 		Extensions:  scan.DefaultExtensions(),
 		FFprobePath: "ffprobe",
 	}
-
-	code := Run(cfg)
+	runner := NewRunner(Deps{
+		LookPath:   fakeLookPath,
+		IsTerminal: func() bool { return false },
+		ProbeFile: func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+			return 12.0, nil
+		},
+		RemoveFile: cleanup.Remove,
+		Stdout:     io.Discard,
+		Stderr:     io.Discard,
+		Stdin:      &bytes.Buffer{},
+	})
+	code := runner.Run(cfg)
 	if code != 0 {
 		t.Errorf("expected exit code 0 when no files match, got %d", code)
 	}
@@ -787,19 +730,6 @@ func TestRun_NoMatch_DeleteMode(t *testing.T) {
 func TestRun_SelectExprTakesPriority(t *testing.T) {
 	tmp := setupFakeEnv(t)
 	defer os.RemoveAll(tmp)
-
-	oldLook := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = oldLook }()
-
-	oldProbe := probeFile
-	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
-		if strings.Contains(filepath.Base(videoPath), "short") {
-			return 3.2, nil
-		}
-		return 12.345, nil
-	}
-	defer func() { probeFile = oldProbe }()
 
 	cfg := Config{
 		Dir:           filepath.Join(tmp, "videos"),
@@ -813,8 +743,8 @@ func TestRun_SelectExprTakesPriority(t *testing.T) {
 		SelectExpr:    "1",
 		ConfirmDelete: true,
 	}
-
-	code := Run(cfg)
+	runner := newRunnerForTest(t, cfg, fakeProbeShort)
+	code := runner.Run(cfg)
 	if code != 0 {
 		t.Errorf("expected exit code 0 when --select is provided in non-interactive mode, got %d", code)
 	}
@@ -832,7 +762,7 @@ func TestPerformSelectedDeletes_ProgressOnFailure(t *testing.T) {
 		{Path: "/nonexistent/a.mp4", Size: 4, Duration: 1.0},
 		{Path: "/nonexistent/b.mp4", Size: 4, Duration: 2.0},
 	}
-	performSelectedDeletes(s, files, func(processed int) {
+	performSelectedDeletes(s, files, cleanup.Remove, func(processed int) {
 		progressCalls++
 	})
 
@@ -851,20 +781,6 @@ func TestRun_SelectExprOverridesTTY(t *testing.T) {
 	tmp := setupFakeEnv(t)
 	defer os.RemoveAll(tmp)
 
-	oldLook := lookPath
-	lookPath = func(path string) (string, error) { return path, nil }
-	defer func() { lookPath = oldLook }()
-
-	oldProbe := probeFile
-	probeFile = func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
-		return 3.2, nil
-	}
-	defer func() { probeFile = oldProbe }()
-
-	oldTerm := isTerminal
-	isTerminal = func(f *os.File) bool { return true }
-	defer func() { isTerminal = oldTerm }()
-
 	cfg := Config{
 		Dir:           filepath.Join(tmp, "videos"),
 		MaxDuration:   10,
@@ -877,8 +793,18 @@ func TestRun_SelectExprOverridesTTY(t *testing.T) {
 		SelectExpr:    "2",
 		ConfirmDelete: true,
 	}
-
-	code := Run(cfg)
+	runner := NewRunner(Deps{
+		LookPath:   fakeLookPath,
+		IsTerminal: func() bool { return true },
+		ProbeFile: func(ffprobePath, videoPath string, timeout time.Duration) (float64, error) {
+			return 3.2, nil
+		},
+		RemoveFile: cleanup.Remove,
+		Stdout:     io.Discard,
+		Stderr:     io.Discard,
+		Stdin:      &bytes.Buffer{},
+	})
+	code := runner.Run(cfg)
 	if code != 0 {
 		t.Errorf("expected exit code 0 when --select overrides simulated TTY, got %d", code)
 	}
@@ -923,7 +849,6 @@ func TestDisplayPath_OutsideBaseDir(t *testing.T) {
 	filePath := filepath.Join(otherDir, "b.mp4")
 	got := displayPath(baseDir, filePath)
 
-	// Should return a path containing .. or the clean absolute path
 	if !strings.Contains(got, "..") && got != filepath.Clean(filePath) {
 		t.Errorf("unexpected result for path outside base: %q", got)
 	}
@@ -946,17 +871,8 @@ func TestPrintMatchedFiles_UsesTableAndRelativePaths(t *testing.T) {
 		{Path: filepath.Join(sub, "a.mp4"), Duration: 3.2, Size: 1572864},
 	}
 
-	oldStdout := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	printMatchedFiles(dir, files)
-
-	w.Close()
-	os.Stdout = oldStdout
-
 	var buf bytes.Buffer
-	buf.ReadFrom(r)
+	printMatchedFiles(&buf, dir, files)
 	out := buf.String()
 
 	if !strings.Contains(out, "Matched files:") {
@@ -974,19 +890,8 @@ func TestPrintMatchedFiles_UsesTableAndRelativePaths(t *testing.T) {
 }
 
 func TestPrintMatchedFiles_EmptyList(t *testing.T) {
-	dir := t.TempDir()
-
-	oldStdout := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	printMatchedFiles(dir, nil)
-
-	w.Close()
-	os.Stdout = oldStdout
-
 	var buf bytes.Buffer
-	buf.ReadFrom(r)
+	printMatchedFiles(&buf, "", nil)
 	out := buf.String()
 
 	if out != "" {
